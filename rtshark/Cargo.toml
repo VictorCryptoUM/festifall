@@ -1,0 +1,24 @@
+[package]
+name = "rtshark"
+version = "2.2.0"
+edition = "2021"
+authors = ["CrabeDeFrance"]
+license = "MIT OR Apache-2.0"
+description = "A Rust interface for TShark"
+repository = "https://github.com/CrabeDeFrance/rtshark"
+homepage = "https://github.com/CrabeDeFrance/rtshark"
+documentation = "https://docs.rs/rtshark"
+readme = "README.md"
+categories = ["network-programming", "api-bindings", "parser-implementations"]
+keywords = ["wireshark", "tshark", "pcap", "network", "dissector"]
+exclude = ["/.github"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+quick-xml = "0.23"
+
+[dev-dependencies]
+nix = "0.24"
+tempdir = "0.3"
+libc = "0.2"
