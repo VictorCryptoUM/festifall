@@ -11,7 +11,7 @@ fn main() {
             .input_path("utun5")
             .live_capture()
             .display_filter("tls"),
-        10_000,
+        200_000,
     );
     let mut source = RTSharkBuilder::builder()
         .input_path("utun5")

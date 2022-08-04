@@ -1,6 +1,6 @@
 use rtshark::{Packet, RTShark, RTSharkBuilderReady};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::fmt::Error;
 use std::ops::Deref;
 use std::ptr::eq;
@@ -52,9 +52,10 @@ impl Ord for PacketOrd {
 
 pub struct RTSharkPool {
     current: RTShark,
-    mem_thread: JoinHandle<()>,
-    recv: Receiver<RTShark>,
     buffer: Vec<PacketOrd>,
+    system: System,
+    mem_limit: u64,
+    builder: RTSharkBuilderReady<'static>,
 }
 
 fn packet_equal(a: &Packet, b: &Packet) -> bool {
@@ -63,10 +64,10 @@ fn packet_equal(a: &Packet, b: &Packet) -> bool {
         let a_value = a.get(field).unwrap().value();
         let b_value = b.get(field).unwrap().value();
         if a_value != b_value {
-            println!("C: {} != R: {}", a_value, b_value);
+            //   println!("C: {} != R: {}", a_value, b_value);
             return false;
         }
-        println!("C: {} == R: {}", a_value, b_value);
+        //  println!("C: {} == R: {}", a_value, b_value);
     }
     true
 }
@@ -74,76 +75,38 @@ fn packet_equal(a: &Packet, b: &Packet) -> bool {
 impl RTSharkPool {
     pub fn new(builder: RTSharkBuilderReady<'static>, mem_limit: u64) -> RTSharkPool {
         let current = builder.clone().spawn().expect("unable to create");
-        let (mem_thread, recv) =
-            Self::mem_check_thread(Pid::from_u32(current.pid().unwrap()), builder, mem_limit);
         RTSharkPool {
             current,
-            mem_thread,
-            recv,
             buffer: Default::default(),
+            system: System::new(),
+            builder,
+            mem_limit,
         }
     }
 
     pub fn replace(&mut self, mut replacement: RTShark) {
-        self.buffer.clear();
+        println!("\t\t\tReplacing RTShark");
+        let target = replacement.read().unwrap().unwrap();
+        let mut attempt = self.current.read().unwrap().unwrap();
 
-        let mut read_amount = 1;
-        let mut last_replacement_pkt = Some(replacement.read().unwrap().unwrap());
-        let mut last_current_pkt = Some(self.current.read().unwrap().unwrap());
-        loop {
-            let equal = packet_equal(
-                last_current_pkt.as_ref().unwrap(),
-                last_replacement_pkt.as_ref().unwrap(),
-            );
-
-            if read_amount % 2 == 0 {
-                self.buffer
-                    .push(PacketOrd(last_replacement_pkt.take().unwrap()));
-            } else {
-                self.buffer
-                    .push(PacketOrd(last_current_pkt.take().unwrap()));
-            }
-
-            if equal {
-                break;
-            }
-
-            for _ in 0..read_amount - 1 {
-                if read_amount % 2 == 0 {
-                    let pkt = PacketOrd(replacement.read().unwrap().unwrap());
-                    println!("LOOP | R: {:?}", pkt.get("frame.len").unwrap().value());
-                    self.buffer.push(pkt);
-                } else {
-                    let pkt = PacketOrd(self.current.read().unwrap().unwrap());
-                    println!("LOOP | C: {:?}", pkt.get("frame.len").unwrap().value());
-                    self.buffer.push(pkt);
-                }
-            }
-
-            if read_amount % 2 == 0 {
-                last_replacement_pkt = Some(replacement.read().unwrap().unwrap());
-            } else {
-                last_current_pkt = Some(self.current.read().unwrap().unwrap());
-            }
-
-            read_amount += 1;
-        }
-        self.buffer.sort();
-
-        println!("replace!");
-        self.buffer.iter().for_each(|p| {
+        while !packet_equal(&attempt, &target) {
             println!(
-                "BUFFER: {:?} - {:?}",
-                p.get("frame.len").unwrap().value(),
-                p.time_epoch()
+                "\t\t\t\tNOT EQUAL: {} - {} != {} - {}",
+                attempt.get("frame.len").unwrap().value(),
+                attempt.get("frame.time_epoch").unwrap().value(),
+                target.get("frame.len").unwrap().value(),
+                target.get("frame.time_epoch").unwrap().value()
             );
-        });
+            self.buffer.push(PacketOrd(attempt));
+            attempt = self.current.read().unwrap().unwrap();
+        }
 
+        self.buffer.push(PacketOrd(target));
         self.current = replacement;
     }
 
     pub fn read(&mut self) -> io::Result<Option<Packet>> {
-        if let Ok(rtshark) = self.recv.try_recv() {
+        if let Some(rtshark) = self.mem_check() {
             self.replace(rtshark);
         }
         if self.buffer.is_empty() {
@@ -153,27 +116,15 @@ impl RTSharkPool {
         }
     }
 
-    fn mem_check_thread(
-        pid: Pid,
-        builder: RTSharkBuilderReady<'static>,
-        limit: u64,
-    ) -> (JoinHandle<()>, Receiver<RTShark>) {
-        let mut pid = Some(pid);
-        let (send, recv) = channel();
-        let thread = thread::spawn(move || loop {
-            let mut system = System::new();
-            if let Some(pid2) = pid {
-                system.refresh_process_specifics(pid2, ProcessRefreshKind::new());
-                if let Some(process) = system.process(pid2) {
-                    if process.memory() > limit {
-                        let new_rtshark = builder.clone().spawn().expect("unable to create");
-                        pid = new_rtshark.pid().map(Pid::from_u32);
-                        send.send(new_rtshark).expect("unable to send");
-                    }
-                }
-            }
-            thread::sleep(Duration::from_millis(5000));
-        });
-        (thread, recv)
+    fn mem_check(&self) -> Option<RTShark> {
+        let mut system = System::new();
+        let pid = Pid::from_u32(self.current.pid()?);
+        system.refresh_process_specifics(pid, ProcessRefreshKind::new());
+        let (process) = system.process(pid)?;
+        if process.memory() > self.mem_limit {
+            Some(self.builder.clone().spawn().expect("unable to create"))
+        } else {
+            None
+        }
     }
 }
