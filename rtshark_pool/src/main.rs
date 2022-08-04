@@ -7,28 +7,35 @@ mod rtshark_pool;
 
 fn main() {
     let mut pool = RTSharkPool::new(
-        || {
-            RTSharkBuilder::builder()
-                .input_path("en0")
-                .extra_opts("-I")
-                .live_capture()
-                .display_filter("tls.handshake.extension.type")
-                .spawn()
-        },
-        500000,
+        RTSharkBuilder::builder()
+            .input_path("utun5")
+            .live_capture()
+            .display_filter("tls"),
+        10_000,
     );
+    let mut source = RTSharkBuilder::builder()
+        .input_path("utun5")
+        .live_capture()
+        .display_filter("tls")
+        .spawn()
+        .unwrap();
 
     loop {
+        if let Some(packet) = source.read().unwrap() {
+            //let meta = match packet.get("tls.handshake.extensions_server_name") {
+            let meta = match packet.get("frame.len") {
+                None => continue,
+                Some(meta) => meta,
+            };
+            println!("ROOT: {:?}", meta.value());
+        }
         if let Some(packet) = pool.read().unwrap() {
-            let layer = match packet.layer_name("tls") {
+            //let meta = match packet.get("tls.handshake.extensions_server_name") {
+            let meta = match packet.get("frame.len") {
                 None => continue,
-                Some(l) => l,
+                Some(meta) => meta,
             };
-            let meta = match layer.metadata("tls.handshake.extensions_server_name") {
-                None => continue,
-                Some(m) => m,
-            };
-            println!("{:?}", meta.display());
+            println!("test: {:?}", meta.value());
         }
     }
 }

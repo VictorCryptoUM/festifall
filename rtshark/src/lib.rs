@@ -360,6 +360,12 @@ impl Packet {
     pub fn iter(&self) -> impl Iterator<Item = &Layer> {
         self.layers.iter()
     }
+
+    pub fn get(&self, name: &str) -> Option<&Metadata> {
+        let layer = name.split(".").collect::<Vec<&str>>()[0];
+        let layer = self.layer_name(layer)?;
+        layer.metadata(name)
+    }
 }
 
 impl IntoIterator for Packet {
